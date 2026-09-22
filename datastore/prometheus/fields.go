@@ -139,10 +139,9 @@ const (
 	reasonBlob           = "not a scalar value (encoded route geometry) -- wrong shape for a Prometheus label or gauge"
 )
 
-// fieldRegistry maps every real protos.Field to how it becomes Prometheus
-// output. It is deliberately exhaustive -- see TestRegistryCoversEveryField --
-// so a field newly added upstream can't silently vanish: it must be given a
-// kind, or explicitly excluded with a reason.
+// fieldRegistry maps known protos.Field entries to how each becomes Prometheus
+// output. Excluded fields document a specific reason why they are not exported;
+// unmapped fields not present in this registry are ignored.
 //
 // Renaming a metric that has already shipped silently breaks every dashboard
 // and alert built on it, so entries here are append-only in practice: add

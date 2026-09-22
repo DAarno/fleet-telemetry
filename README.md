@@ -176,6 +176,11 @@ Dispatchers handle vehicle data processing upon its arrival at Fleet Telemetry s
   * If `publish_vin_topics` is enabled, the payload is additionally published to the VIN channel \*namespace\*`_`\*topic\*`_{`\*vin\*`}` (e.g. `tesla_V_{<vin>}`). Member channels and the VIN channel both receive the record.
   * At least one of `subscriber_set_prefix` or `publish_vin_topics` must be configured — otherwise no records could ever be published and the server fails to start.
   * Supports TLS via the `tls` block and connection-pool tuning via the `pool` block.
+* Prometheus: Exports vehicle telemetry as Prometheus gauges on the existing metrics endpoint. Configure with the config.json file by adding `prometheus` to a record's dispatcher list; it needs no dispatcher config block of its own, since it publishes to the server's own metrics registry served at `monitoring.prometheus_metrics_port`.
+  * Every field is labeled by `vin`, so one server can export several vehicles.
+  * Unlike the other dispatchers this one is stateful rather than a pass-through: a gauge holds its last reported value until the vehicle sends a new one. Vehicles stream a field only when its value *changes*, so `vehicle_telemetry_updated_timestamp_seconds{field=...}` records when each field last arrived, letting a consumer distinguish a fresh value from one the vehicle has not reported in hours.
+  * Fields with a small, bounded set of named states (charge state, gear, cable type, ...) are exported as one series per value with `1` on whichever is current. Free-text fields are deliberately not exported, since modeling unbounded content as a label would grow cardinality without limit.
+  * See [datastore/prometheus/fields.go](./datastore/prometheus/fields.go) for the metric, unit and label each telemetry field maps to, and the reason for every field that is intentionally not exported.
 * Logger: This is a simple STDOUT logger that serializes the protos to json.
 
 >NOTE: To add a new dispatcher, please provide integration tests and updated documentation. To serialize dispatcher data as json instead of protobufs, add a config `transmit_decoded_records` and set value to `true` as shown [here](config/test_configs_test.go#L186)

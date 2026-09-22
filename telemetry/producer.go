@@ -22,6 +22,8 @@ const (
 	ZMQ Dispatcher = "zmq"
 	// MQTT registers an MQTT dispatcher
 	MQTT Dispatcher = "mqtt"
+	// Prometheus registers a Prometheus metrics exporter dispatcher
+	Prometheus Dispatcher = "prometheus"
 	// Redis registers a Redis pub/sub dispatcher
 	Redis Dispatcher = "redis"
 )

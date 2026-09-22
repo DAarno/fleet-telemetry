@@ -25,6 +25,7 @@ import (
 	"github.com/teslamotors/fleet-telemetry/datastore/kafka"
 	"github.com/teslamotors/fleet-telemetry/datastore/kinesis"
 	"github.com/teslamotors/fleet-telemetry/datastore/mqtt"
+	promds "github.com/teslamotors/fleet-telemetry/datastore/prometheus"
 	redisdatastore "github.com/teslamotors/fleet-telemetry/datastore/redis"
 	"github.com/teslamotors/fleet-telemetry/datastore/simple"
 	"github.com/teslamotors/fleet-telemetry/datastore/zmq"
@@ -442,6 +443,21 @@ func (c *Config) ConfigureProducers(airbrakeHandler *airbrake.Handler, logger *l
 			return nil, nil, err
 		}
 		producers[telemetry.MQTT] = mqttProducer
+	}
+
+	if _, ok := requiredDispatchers[telemetry.Prometheus]; ok {
+		// This dispatcher publishes to the server's own metrics registry
+		// rather than to an external system, so without the metrics endpoint
+		// there is nowhere for the gauges to be served from and records
+		// would be silently discarded. Fail at startup instead.
+		if !c.prometheusEnabled() {
+			return nil, nil, errors.New("prometheus dispatcher requires monitoring.prometheus_metrics_port to be set, otherwise no metrics are served")
+		}
+		promProducer, err := promds.NewProducer(c.MetricCollector, logger)
+		if err != nil {
+			return nil, nil, err
+		}
+		producers[telemetry.Prometheus] = promProducer
 	}
 
 	if _, ok := requiredDispatchers[telemetry.Redis]; ok {

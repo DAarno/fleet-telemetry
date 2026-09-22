@@ -65,7 +65,8 @@
             "logger",
             "mqtt",
             "zmq",
-            "redis"
+            "redis",
+            "prometheus"
         ],
         "connectivity": [
             "kafka",

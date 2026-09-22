@@ -49,7 +49,7 @@ func TestProduceSetsMetrics(t *testing.T) {
 	mfs, err := promclient.DefaultGatherer.Gather()
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 
-	g.Expect(gaugeValue(mfs, "vehicle_battery_soc", "TESTVIN")).To(gomega.Equal(float64(84)))
+	g.Expect(gaugeValue(mfs, "vehicle_battery_soc", "TESTVIN")).To(gomega.BeNumerically("~", 84.71, 0.01))
 	g.Expect(gaugeValue(mfs, "vehicle_charge_limit_soc", "TESTVIN")).To(gomega.Equal(float64(90)))
 	g.Expect(gaugeValue(mfs, "vehicle_location_latitude_millidegrees", "TESTVIN")).To(gomega.Equal(float64(37400)))
 	g.Expect(gaugeValue(mfs, "vehicle_location_longitude_millidegrees", "TESTVIN")).To(gomega.Equal(float64(-122100)))

@@ -16,6 +16,7 @@ type Gauge interface {
 	Sub(int64, Labels)
 	Inc(Labels)
 	Set(int64, Labels)
+	SetFloat64(float64, Labels)
 }
 
 // Counter goes up

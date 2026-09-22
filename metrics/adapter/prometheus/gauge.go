@@ -30,6 +30,11 @@ func (c *Gauge) Inc(labels adapter.Labels) {
 
 // Set the Gauge
 func (c *Gauge) Set(n int64, labels adapter.Labels) {
+	c.SetFloat64(float64(n), labels)
+}
+
+// SetFloat64 sets the Gauge to a float64
+func (c *Gauge) SetFloat64(n float64, labels adapter.Labels) {
 	l := prometheus.Labels(labels)
-	c.gauge.With(l).Set(float64(n))
+	c.gauge.With(l).Set(n)
 }

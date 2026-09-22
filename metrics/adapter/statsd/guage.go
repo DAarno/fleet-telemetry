@@ -34,3 +34,9 @@ func (s *Gauge) Set(n int64, labels adapter.Labels) {
 	tags := getTags(labels)
 	s.client.Gauge(s.name, n, tags...)
 }
+
+// SetFloat64 sets the Gauge with a float64
+func (s *Gauge) SetFloat64(n float64, labels adapter.Labels) {
+	tags := getTags(labels)
+	s.client.FGauge(s.name, n, tags...)
+}

@@ -274,7 +274,7 @@ func (p *Producer) produceNumeric(spec fieldSpec, vin string, val interface{}) b
 	if scale == 0 {
 		scale = 1
 	}
-	registeredGauges.byMetric[spec.metric].Set(int64(v*float64(scale)), familyLabels(vin, spec))
+	registeredGauges.byMetric[spec.metric].SetFloat64(v*float64(scale), familyLabels(vin, spec))
 	return true
 }
 
@@ -353,8 +353,8 @@ func (p *Producer) produceLocation(spec fieldSpec, vin string, val interface{}) 
 		return false
 	}
 	labels := familyLabels(vin, spec)
-	registeredGauges.byMetric[spec.metric+"_latitude_millidegrees"].Set(int64(loc["latitude"]*1000), labels)
-	registeredGauges.byMetric[spec.metric+"_longitude_millidegrees"].Set(int64(loc["longitude"]*1000), labels)
+	registeredGauges.byMetric[spec.metric+"_latitude_millidegrees"].SetFloat64(loc["latitude"]*1000, labels)
+	registeredGauges.byMetric[spec.metric+"_longitude_millidegrees"].SetFloat64(loc["longitude"]*1000, labels)
 	return true
 }
 

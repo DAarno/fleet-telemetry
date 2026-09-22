@@ -193,6 +193,19 @@ var _ = Describe("Prometheus Metric Adapter", Ordered, func() {
 			metrics = getMetrics()
 			Expect(metrics).To(ContainSubstring("set_gauge 6"))
 		})
+
+		It("sets float64", func() {
+			gauge := metricCollector.RegisterGauge(adapter.CollectorOptions{
+				Name:   "set_float_gauge",
+				Help:   "help text",
+				Labels: []string{},
+			})
+
+			gauge.SetFloat64(21.5, map[string]string{})
+
+			metrics := getMetrics()
+			Expect(metrics).To(ContainSubstring("set_float_gauge 21.5"))
+		})
 		It("increments", func() {
 			gauge := metricCollector.RegisterGauge(adapter.CollectorOptions{
 				Name:   "increment_gauge",

@@ -243,7 +243,11 @@ var _ = Describe("Test messages", Ordered, func() {
 		})
 
 		It("exports vehicle data as prometheus gauges", func() {
-			err := connection.WriteMessage(websocket.BinaryMessage, payload)
+			withGaugeFields := GenerateVehicleMessage(deviceID, vehicleName, location, timestamp,
+				&protos.Datum{Key: protos.Field_ChargeState, Value: &protos.Value{Value: &protos.Value_StringValue{StringValue: "Charging"}}},
+				&protos.Datum{Key: protos.Field_CarType, Value: &protos.Value{Value: &protos.Value_CarTypeValue{CarTypeValue: protos.CarTypeValue_CarTypeModelY}}},
+			)
+			err := connection.WriteMessage(websocket.BinaryMessage, withGaugeFields)
 			Expect(err).NotTo(HaveOccurred())
 
 			// The location arrives as a string and is parsed into a
@@ -259,6 +263,8 @@ var _ = Describe("Test messages", Ordered, func() {
 				// Freshness timestamp for the field, so a consumer can tell a
 				// value just reported from one the vehicle has not sent in hours.
 				ContainSubstring(fmt.Sprintf(`vehicle_telemetry_updated_timestamp_seconds{field="location",vin="%s"}`, deviceID)),
+				ContainSubstring(fmt.Sprintf(`vehicle_charge_state{state="Charging",vin="%s"} 1`, deviceID)),
+				MatchRegexp(`vehicle_info\{[^}]*car_type="CarTypeModelY"[^}]*vin="device-1"[^}]*\} 1`),
 			))
 		})
 	})

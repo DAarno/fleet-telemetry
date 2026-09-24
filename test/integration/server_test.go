@@ -36,12 +36,12 @@ const (
 	caClient   = "./test-certs/vehicle_device.CA.cert"
 )
 
-func GenerateVehicleMessage(id, vehicleName, location string, timestamp *timestamppb.Timestamp) []byte {
+func GenerateVehicleMessage(id, vehicleName, location string, timestamp *timestamppb.Timestamp, extra ...*protos.Datum) []byte {
 	senderID := fmt.Sprintf("%s.%s", deviceType, id)
-	return tesla.FlatbuffersStreamToBytes([]byte(senderID), []byte("V"), []byte(txid), generatePayload(vehicleName, location, timestamp), 1, []byte(messageID), []byte(deviceType), []byte(id), uint64(time.Now().UnixMilli()))
+	return tesla.FlatbuffersStreamToBytes([]byte(senderID), []byte("V"), []byte(txid), generatePayload(vehicleName, location, timestamp, extra...), 1, []byte(messageID), []byte(deviceType), []byte(id), uint64(time.Now().UnixMilli()))
 }
 
-func generatePayload(vehicleName, location string, timestamp *timestamppb.Timestamp) []byte {
+func generatePayload(vehicleName, location string, timestamp *timestamppb.Timestamp, extra ...*protos.Datum) []byte {
 	var data []*protos.Datum
 	data = append(data, &protos.Datum{
 		Key: protos.Field_VehicleName,
@@ -58,6 +58,7 @@ func generatePayload(vehicleName, location string, timestamp *timestamppb.Timest
 			},
 		},
 	})
+	data = append(data, extra...)
 	payload, err := proto.Marshal(&protos.Payload{
 		Data:      data,
 		CreatedAt: timestamp,

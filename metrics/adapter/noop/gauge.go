@@ -27,3 +27,7 @@ func (c *Gauge) Set(_ int64, _ adapter.Labels) {
 // SetFloat64 (noop)
 func (c *Gauge) SetFloat64(_ float64, _ adapter.Labels) {
 }
+
+// Delete (noop)
+func (c *Gauge) Delete(_ adapter.Labels) {
+}

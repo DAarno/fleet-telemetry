@@ -103,6 +103,10 @@ type Config struct {
 
 	VinsSignalTrackingEnabled []string `json:"vins_signal_tracking_enabled"`
 
+	// PrometheusExportVINs bounds per-vehicle gauge cardinality. Required when
+	// the Prometheus dispatcher is enabled; unrelated to signal accounting.
+	PrometheusExportVINs []string `json:"prometheus_export_vins,omitempty"`
+
 	// MetricCollector collects metrics for the application
 	MetricCollector metrics.MetricCollector
 
@@ -453,7 +457,7 @@ func (c *Config) ConfigureProducers(airbrakeHandler *airbrake.Handler, logger *l
 		if !c.prometheusEnabled() {
 			return nil, nil, errors.New("prometheus dispatcher requires monitoring.prometheus_metrics_port to be set, otherwise no metrics are served")
 		}
-		promProducer, err := promds.NewProducer(c.MetricCollector, logger)
+		promProducer, err := promds.NewProducer(c.MetricCollector, logger, c.PrometheusExportVINs, 7*24*time.Hour)
 		if err != nil {
 			return nil, nil, err
 		}

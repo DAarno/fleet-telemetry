@@ -1,6 +1,7 @@
 package prometheus
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -20,8 +21,15 @@ import (
 // fields.go's fieldRegistry rather than hardcoded here -- this loop just
 // dispatches on fieldSpec.kind.
 type Producer struct {
-	logger *logrus.Logger
-	gauges gaugeSet
+	logger      *logrus.Logger
+	gauges      gaugeSet
+	allowedVINs map[string]struct{}
+	retention   time.Duration
+	lastSeen    map[string]time.Time
+	series      map[string]map[string]seriesRef
+	stop        chan struct{}
+	done        chan struct{}
+	closeOnce   sync.Once
 
 	// exclusiveState and infoState are both instances of the same underlying
 	// problem: a Prometheus series identity (a metric name plus its full
@@ -33,6 +41,11 @@ type Producer struct {
 	infoState      map[string]map[string]string
 }
 
+type seriesRef struct {
+	metric string
+	labels adapter.Labels
+}
+
 // gaugeSet holds the set of gauges this producer reports on.
 type gaugeSet struct {
 	byMetric       map[string]adapter.Gauge
@@ -41,14 +54,39 @@ type gaugeSet struct {
 	infoLabelNames []string
 }
 
-// NewProducer creates a new Prometheus metrics producer
-func NewProducer(metricsCollector metrics.MetricCollector, logger *logrus.Logger) (telemetry.Producer, error) {
-	return &Producer{
+// NewProducer creates a bounded Prometheus metrics producer. An explicit VIN
+// allowlist prevents a large fleet from accidentally exporting every car.
+func NewProducer(metricsCollector metrics.MetricCollector, logger *logrus.Logger, vins []string, retention time.Duration) (telemetry.Producer, error) {
+	if len(vins) == 0 || len(vins) > 20 {
+		return nil, fmt.Errorf("prometheus dispatcher requires 1 to 20 prometheus_export_vins")
+	}
+	if retention <= 0 {
+		return nil, fmt.Errorf("prometheus retention must be positive")
+	}
+	allowed := make(map[string]struct{}, len(vins))
+	for _, vin := range vins {
+		if vin == "" {
+			return nil, fmt.Errorf("prometheus_export_vins cannot contain an empty VIN")
+		}
+		if _, exists := allowed[vin]; exists {
+			return nil, fmt.Errorf("prometheus_export_vins contains duplicate VIN %q", vin)
+		}
+		allowed[vin] = struct{}{}
+	}
+	p := &Producer{
 		logger:         logger,
 		gauges:         registerGauges(metricsCollector),
+		allowedVINs:    allowed,
+		retention:      retention,
+		lastSeen:       make(map[string]time.Time),
+		series:         make(map[string]map[string]seriesRef),
+		stop:           make(chan struct{}),
+		done:           make(chan struct{}),
 		exclusiveState: make(map[string]string),
 		infoState:      make(map[string]map[string]string),
-	}, nil
+	}
+	go p.runSweep()
+	return p, nil
 }
 
 // helpText carries over the exact wording already shipped for fields that
@@ -149,8 +187,82 @@ func registerGauges(m metrics.MetricCollector) gaugeSet {
 	}
 }
 
-// Close noop
-func (p *Producer) Close() error { return nil }
+// Close stops the expiry worker.
+func (p *Producer) Close() error {
+	p.closeOnce.Do(func() { close(p.stop) })
+	<-p.done
+	return nil
+}
+
+func (p *Producer) runSweep() {
+	defer close(p.done)
+	interval := p.retention / 2
+	if interval > time.Hour {
+		interval = time.Hour
+	}
+	if interval < time.Millisecond {
+		interval = time.Millisecond
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case now := <-ticker.C:
+			p.sweep(now)
+		case <-p.stop:
+			return
+		}
+	}
+}
+
+// sweep removes all output series and state for VINs that have stopped
+// reporting, including timestamps and previously active enum/info labels.
+// A scrape may run concurrently; Gauge.Delete is safe for that case.
+func (p *Producer) sweep(now time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for vin, seen := range p.lastSeen {
+		if now.Sub(seen) < p.retention {
+			continue
+		}
+		for _, ref := range p.series[vin] {
+			p.gauge(ref.metric).Delete(ref.labels)
+		}
+		delete(p.series, vin)
+		delete(p.lastSeen, vin)
+		delete(p.infoState, vin)
+		for key := range p.exclusiveState {
+			if strings.Contains(key, "|"+vin+"|") {
+				delete(p.exclusiveState, key)
+			}
+		}
+	}
+}
+
+func (p *Producer) gauge(metric string) adapter.Gauge {
+	switch metric {
+	case "vehicle_telemetry_updated_timestamp_seconds":
+		return p.gauges.updated
+	case "vehicle_info":
+		return p.gauges.info
+	default:
+		return p.gauges.byMetric[metric]
+	}
+}
+
+// set remembers every exact label set so expiry can delete it later.
+// Produce and sweep hold p.mu, so tracking and gauge updates are atomic to
+// each other. JSON encodes map keys in stable order for deduplication.
+func (p *Producer) set(metric string, value float64, labels adapter.Labels) {
+	encoded, _ := json.Marshal(labels)
+	vin := labels["vin"]
+	if p.series[vin] == nil {
+		p.series[vin] = make(map[string]seriesRef)
+	}
+	key := metric + "|" + string(encoded)
+	p.series[vin][key] = seriesRef{metric: metric, labels: cloneLabels(labels)}
+	p.gauge(metric).SetFloat64(value, labels)
+}
 
 // ProcessReliableAck noop
 func (p *Producer) ProcessReliableAck(_ *telemetry.Record) {}
@@ -167,12 +279,19 @@ func (p *Producer) Produce(entry *telemetry.Record) {
 	if !ok {
 		return
 	}
+	if _, allowed := p.allowedVINs[entry.Vin]; !allowed {
+		return
+	}
 
 	fields := transformers.PayloadToMap(payload, false, entry.Vin, p.logger)
 	invalid := invalidFields(payload)
 	vin := entry.Vin
-	now := time.Now().Unix()
+	observed := time.Now()
+	now := observed.Unix()
 	infoChanges := map[string]string{}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.lastSeen[vin] = observed
 
 	for name, val := range fields {
 		number, ok := protos.Field_value[name]
@@ -223,14 +342,14 @@ func (p *Producer) Produce(entry *telemetry.Record) {
 			continue
 		}
 		if spec.kind != kindInfo {
-			p.gauges.updated.Set(now, adapter.Labels{"vin": vin, "field": spec.touchKeyOrDefault(field)})
+			p.set("vehicle_telemetry_updated_timestamp_seconds", float64(now), adapter.Labels{"vin": vin, "field": spec.touchKeyOrDefault(field)})
 		}
 	}
 
 	if len(infoChanges) > 0 {
 		p.updateInfo(vin, infoChanges)
 		for label := range infoChanges {
-			p.gauges.updated.Set(now, adapter.Labels{"vin": vin, "field": "info_" + label})
+			p.set("vehicle_telemetry_updated_timestamp_seconds", float64(now), adapter.Labels{"vin": vin, "field": "info_" + label})
 		}
 	}
 }
@@ -267,13 +386,13 @@ func (p *Producer) produceNumeric(spec fieldSpec, vin string, val interface{}) b
 	if scale == 0 {
 		scale = 1
 	}
-	p.gauges.byMetric[spec.metric].SetFloat64(v*float64(scale), familyLabels(vin, spec))
+	p.set(spec.metric, v*float64(scale), familyLabels(vin, spec))
 	return true
 }
 
 func (p *Producer) produceBoolean(spec fieldSpec, vin string, val interface{}) bool {
 	if b, ok := val.(bool); ok {
-		p.gauges.byMetric[spec.metric].Set(boolToInt(b), familyLabels(vin, spec))
+		p.set(spec.metric, float64(boolToInt(b)), familyLabels(vin, spec))
 		return true
 	}
 	// Also accept a 0/1 numeric. Tesla does not document which encoding each
@@ -283,7 +402,7 @@ func (p *Producer) produceBoolean(spec fieldSpec, vin string, val interface{}) b
 	// rather than coerced, since that would mean the field is not a flag at
 	// all and the registry entry is simply wrong.
 	if v, ok := numericValue(val); ok && (v == 0 || v == 1) {
-		p.gauges.byMetric[spec.metric].Set(int64(v), familyLabels(vin, spec))
+		p.set(spec.metric, v, familyLabels(vin, spec))
 		return true
 	}
 	return false
@@ -295,7 +414,7 @@ func (p *Producer) produceEnum(spec fieldSpec, vin string, val interface{}) bool
 		return false
 	}
 	key := strings.Join([]string{spec.metric, vin, spec.extraValue}, "|")
-	p.setExclusiveState(p.gauges.byMetric[spec.metric], key, familyLabels(vin, spec), spec.valueLabel, s)
+	p.setExclusiveState(spec.metric, key, familyLabels(vin, spec), spec.valueLabel, s)
 	return true
 }
 
@@ -304,11 +423,10 @@ func (p *Producer) produceBoolMap(spec fieldSpec, vin string, val interface{}) b
 	if !ok {
 		return false
 	}
-	gauge := p.gauges.byMetric[spec.metric]
 	for k, v := range m {
 		labels := familyLabels(vin, spec)
 		labels[spec.boolMapLabel] = camelToSnake(k)
-		gauge.Set(boolToInt(v), labels)
+		p.set(spec.metric, float64(boolToInt(v)), labels)
 	}
 	return true
 }
@@ -325,7 +443,7 @@ func (p *Producer) produceScheduledTime(spec fieldSpec, vin string, val interfac
 			return false
 		}
 		seconds := t.Hour()*3600 + t.Minute()*60 + t.Second()
-		p.gauges.byMetric[spec.metric+"_seconds_since_midnight"].Set(int64(seconds), labels)
+		p.set(spec.metric+"_seconds_since_midnight", float64(seconds), labels)
 		return true
 	}
 
@@ -334,7 +452,7 @@ func (p *Producer) produceScheduledTime(spec fieldSpec, vin string, val interfac
 	// mismatch was silently dropping the field and logging an error on
 	// every payload once a schedule was actually set.
 	if v, ok := numericValue(val); ok {
-		p.gauges.byMetric[spec.metric+"_timestamp_seconds"].Set(int64(v), labels)
+		p.set(spec.metric+"_timestamp_seconds", v, labels)
 		return true
 	}
 	return false
@@ -346,8 +464,8 @@ func (p *Producer) produceLocation(spec fieldSpec, vin string, val interface{}) 
 		return false
 	}
 	labels := familyLabels(vin, spec)
-	p.gauges.byMetric[spec.metric+"_latitude_degrees"].SetFloat64(loc["latitude"], labels)
-	p.gauges.byMetric[spec.metric+"_longitude_degrees"].SetFloat64(loc["longitude"], labels)
+	p.set(spec.metric+"_latitude_degrees", loc["latitude"], labels)
+	p.set(spec.metric+"_longitude_degrees", loc["longitude"], labels)
 	return true
 }
 
@@ -387,17 +505,15 @@ func infoValue(val interface{}) (string, bool) {
 // the last transition stays at 1 forever, and a consumer picking "whichever
 // series is 1" can pick the wrong one -- this is exactly the bug that once
 // caused a car to keep charging after "current state" reported stopped.
-func (p *Producer) setExclusiveState(gauge adapter.Gauge, key string, baseLabels adapter.Labels, valueLabel, newValue string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+func (p *Producer) setExclusiveState(metric, key string, baseLabels adapter.Labels, valueLabel, newValue string) {
 	if old, ok := p.exclusiveState[key]; ok && old != newValue {
 		oldLabels := cloneLabels(baseLabels)
 		oldLabels[valueLabel] = old
-		gauge.Set(0, oldLabels)
+		p.set(metric, 0, oldLabels)
 	}
 	newLabels := cloneLabels(baseLabels)
 	newLabels[valueLabel] = newValue
-	gauge.Set(1, newLabels)
+	p.set(metric, 1, newLabels)
 	p.exclusiveState[key] = newValue
 }
 
@@ -409,9 +525,6 @@ func (p *Producer) setExclusiveState(gauge adapter.Gauge, key string, baseLabels
 // identity is its full label set, so changing even one label (e.g. a
 // firmware update) means the old combination must be zeroed just the same.
 func (p *Producer) updateInfo(vin string, changes map[string]string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	old := p.infoState[vin]
 	next := make(map[string]string, len(p.gauges.infoLabelNames))
 	for _, name := range p.gauges.infoLabelNames {
@@ -428,9 +541,9 @@ func (p *Producer) updateInfo(vin string, changes map[string]string) {
 		return
 	}
 	if old != nil {
-		p.gauges.info.Set(0, labelsWithVin(vin, old))
+		p.set("vehicle_info", 0, labelsWithVin(vin, old))
 	}
-	p.gauges.info.Set(1, labelsWithVin(vin, next))
+	p.set("vehicle_info", 1, labelsWithVin(vin, next))
 	p.infoState[vin] = next
 }
 

@@ -1,6 +1,7 @@
 package prometheus_test
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -17,6 +18,21 @@ import (
 	"github.com/teslamotors/fleet-telemetry/telemetry"
 )
 
+var testVINs = []string{
+	"TESTVIN", "TESTVIN2", "TRANSITIONVIN", "CABLETRANSITIONVIN", "SCALEVIN",
+	"DOORVIN", "WINDOWVIN", "SCHEDVIN", "TIMEVIN", "TRIPVIN", "INFOVIN",
+	"INVALIDVIN", "INVALIDENUMVIN", "BOOLNUMVIN", "BOOLBADVIN",
+}
+
+func newTestProducer(t *testing.T, collector *promadapter.Collector, logger *logrus.Logger) (telemetry.Producer, error) {
+	t.Helper()
+	producer, err := promproducer.NewProducer(collector, logger, testVINs, time.Hour)
+	if err == nil {
+		t.Cleanup(func() { _ = producer.Close() })
+	}
+	return producer, err
+}
+
 func newTestCollector(t *testing.T) *promadapter.Collector {
 	t.Helper()
 	collector := promadapter.NewCollector()
@@ -24,12 +40,67 @@ func newTestCollector(t *testing.T) *promadapter.Collector {
 	return collector
 }
 
+func TestProducerRequiresBoundedVINAllowlist(t *testing.T) {
+	logger, _ := logrus.NoOpLogger()
+	for _, vins := range [][]string{nil, {""}, {"DUP", "DUP"}} {
+		_, err := promproducer.NewProducer(newTestCollector(t), logger, vins, time.Hour)
+		if err == nil {
+			t.Fatalf("accepted invalid VIN allowlist %v", vins)
+		}
+	}
+	tooMany := make([]string, 21)
+	for i := range tooMany {
+		tooMany[i] = fmt.Sprintf("VIN%02d", i)
+	}
+	if _, err := promproducer.NewProducer(newTestCollector(t), logger, tooMany, time.Hour); err == nil {
+		t.Fatal("accepted allowlist with more than 20 vehicles")
+	}
+}
+
+func TestProducerFiltersAndExpiresAllVINSeries(t *testing.T) {
+	g := gomega.NewGomegaWithT(t)
+	logger, _ := logrus.NoOpLogger()
+	collector := newTestCollector(t)
+	producer, err := promproducer.NewProducer(collector, logger, []string{"ACTIVEVIN"}, 80*time.Millisecond)
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+	t.Cleanup(func() { _ = producer.Close() })
+
+	send(t, producer, "OTHER", &protos.Datum{Key: protos.Field_Soc, Value: &protos.Value{Value: &protos.Value_IntValue{IntValue: 20}}})
+	send(t, producer, "ACTIVEVIN", &protos.Datum{Key: protos.Field_Soc, Value: &protos.Value{Value: &protos.Value_IntValue{IntValue: 80}}})
+	send(t, producer, "ACTIVEVIN", &protos.Datum{Key: protos.Field_ChargeState, Value: &protos.Value{Value: &protos.Value_StringValue{StringValue: "Charging"}}})
+	send(t, producer, "ACTIVEVIN", &protos.Datum{Key: protos.Field_CarType, Value: &protos.Value{Value: &protos.Value_CarTypeValue{CarTypeValue: protos.CarTypeValue_CarTypeModelY}}})
+
+	read := func(metric string, labels map[string]string) float64 {
+		mfs, err := promclient.DefaultGatherer.Gather()
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+		return gaugeValueForLabels(mfs, metric, labels)
+	}
+	g.Expect(read("vehicle_battery_soc", map[string]string{"vin": "OTHER"})).To(gomega.Equal(float64(-1)))
+	g.Expect(read("vehicle_battery_soc", map[string]string{"vin": "ACTIVEVIN"})).To(gomega.Equal(float64(80)))
+	g.Expect(read("vehicle_charge_state", map[string]string{"vin": "ACTIVEVIN", "state": "Charging"})).To(gomega.Equal(float64(1)))
+	g.Expect(read("vehicle_telemetry_updated_timestamp_seconds", map[string]string{"vin": "ACTIVEVIN", "field": "soc"})).To(gomega.BeNumerically(">", 0))
+	// The info label set is long; a VIN lookup is enough to prove the series exists.
+	g.Expect(read("vehicle_info", map[string]string{"vin": "ACTIVEVIN"})).To(gomega.Equal(float64(1)))
+
+	g.Eventually(func() bool {
+		return read("vehicle_battery_soc", map[string]string{"vin": "ACTIVEVIN"}) == -1 &&
+			read("vehicle_charge_state", map[string]string{"vin": "ACTIVEVIN", "state": "Charging"}) == -1 &&
+			read("vehicle_telemetry_updated_timestamp_seconds", map[string]string{"vin": "ACTIVEVIN", "field": "soc"}) == -1 &&
+			read("vehicle_info", map[string]string{"vin": "ACTIVEVIN"}) == -1
+	}, time.Second, 10*time.Millisecond).Should(gomega.BeTrue())
+
+	// A reconnect starts with fresh enum state, not a predecessor from the old session.
+	send(t, producer, "ACTIVEVIN", &protos.Datum{Key: protos.Field_ChargeState, Value: &protos.Value{Value: &protos.Value_StringValue{StringValue: "Idle"}}})
+	g.Expect(read("vehicle_charge_state", map[string]string{"vin": "ACTIVEVIN", "state": "Idle"})).To(gomega.Equal(float64(1)))
+	g.Expect(read("vehicle_charge_state", map[string]string{"vin": "ACTIVEVIN", "state": "Charging"})).To(gomega.Equal(float64(-1)))
+}
+
 func TestProduceSetsMetrics(t *testing.T) {
 	g := gomega.NewGomegaWithT(t)
 	logger, _ := logrus.NoOpLogger()
 
 	metricsCollector := newTestCollector(t)
-	producer, err := promproducer.NewProducer(metricsCollector, logger)
+	producer, err := newTestProducer(t, metricsCollector, logger)
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 
 	payload := &protos.Payload{
@@ -70,7 +141,7 @@ func TestProduceSetsFieldUpdateTimestamps(t *testing.T) {
 	logger, _ := logrus.NoOpLogger()
 
 	metricsCollector := newTestCollector(t)
-	producer, err := promproducer.NewProducer(metricsCollector, logger)
+	producer, err := newTestProducer(t, metricsCollector, logger)
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 
 	before := float64(time.Now().Unix())
@@ -121,7 +192,7 @@ func TestChargeStateTransitionZeroesPreviousValue(t *testing.T) {
 	logger, _ := logrus.NoOpLogger()
 
 	metricsCollector := newTestCollector(t)
-	producer, err := promproducer.NewProducer(metricsCollector, logger)
+	producer, err := newTestProducer(t, metricsCollector, logger)
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 
 	send := func(vin, state string) {
@@ -167,7 +238,7 @@ func TestChargingCableTransitionZeroesPreviousValue(t *testing.T) {
 	logger, _ := logrus.NoOpLogger()
 
 	metricsCollector := newTestCollector(t)
-	producer, err := promproducer.NewProducer(metricsCollector, logger)
+	producer, err := newTestProducer(t, metricsCollector, logger)
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 
 	send := func(vin, cable string) {
@@ -231,7 +302,7 @@ func send(t *testing.T, producer telemetry.Producer, vin string, datum *protos.D
 func TestProducePreservesFractionalMeasurements(t *testing.T) {
 	g := gomega.NewGomegaWithT(t)
 	logger, _ := logrus.NoOpLogger()
-	producer, err := promproducer.NewProducer(newTestCollector(t), logger)
+	producer, err := newTestProducer(t, newTestCollector(t), logger)
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 
 	const vin = "SCALEVIN"
@@ -254,7 +325,7 @@ func TestProducePreservesFractionalMeasurements(t *testing.T) {
 func TestProduceHandlesDoorBooleans(t *testing.T) {
 	g := gomega.NewGomegaWithT(t)
 	logger, _ := logrus.NoOpLogger()
-	producer, err := promproducer.NewProducer(newTestCollector(t), logger)
+	producer, err := newTestProducer(t, newTestCollector(t), logger)
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 
 	const vin = "DOORVIN"
@@ -275,7 +346,7 @@ func TestProduceHandlesDoorBooleans(t *testing.T) {
 func TestProduceWindowFamilyTransitionZeroesPreviousValue(t *testing.T) {
 	g := gomega.NewGomegaWithT(t)
 	logger, _ := logrus.NoOpLogger()
-	producer, err := promproducer.NewProducer(newTestCollector(t), logger)
+	producer, err := newTestProducer(t, newTestCollector(t), logger)
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 
 	const vin = "WINDOWVIN"
@@ -313,7 +384,7 @@ func TestProduceWindowFamilyTransitionZeroesPreviousValue(t *testing.T) {
 func TestProduceScheduledTimeFromTimestamp(t *testing.T) {
 	g := gomega.NewGomegaWithT(t)
 	logger, hook := logrus.NoOpLogger()
-	producer, err := promproducer.NewProducer(newTestCollector(t), logger)
+	producer, err := newTestProducer(t, newTestCollector(t), logger)
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 
 	const vin = "SCHEDVIN"
@@ -338,7 +409,7 @@ func TestProduceScheduledTimeFromTimestamp(t *testing.T) {
 func TestProduceConvertsTimeOfDay(t *testing.T) {
 	g := gomega.NewGomegaWithT(t)
 	logger, _ := logrus.NoOpLogger()
-	producer, err := promproducer.NewProducer(newTestCollector(t), logger)
+	producer, err := newTestProducer(t, newTestCollector(t), logger)
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 
 	const vin = "TIMEVIN"
@@ -358,7 +429,7 @@ func TestProduceConvertsTimeOfDay(t *testing.T) {
 func TestProduceLocationFamily(t *testing.T) {
 	g := gomega.NewGomegaWithT(t)
 	logger, _ := logrus.NoOpLogger()
-	producer, err := promproducer.NewProducer(newTestCollector(t), logger)
+	producer, err := newTestProducer(t, newTestCollector(t), logger)
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 
 	const vin = "TRIPVIN"
@@ -380,7 +451,7 @@ func TestProduceLocationFamily(t *testing.T) {
 func TestProduceInfoGaugeTracksChanges(t *testing.T) {
 	g := gomega.NewGomegaWithT(t)
 	logger, _ := logrus.NoOpLogger()
-	producer, err := promproducer.NewProducer(newTestCollector(t), logger)
+	producer, err := newTestProducer(t, newTestCollector(t), logger)
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 
 	const vin = "INFOVIN"
@@ -449,7 +520,7 @@ func gaugeValueForLabels(mfs []*dto.MetricFamily, metricName string, wantLabels 
 func TestInvalidValueProducesNothing(t *testing.T) {
 	g := gomega.NewGomegaWithT(t)
 	logger, hook := logrus.NoOpLogger()
-	producer, err := promproducer.NewProducer(newTestCollector(t), logger)
+	producer, err := newTestProducer(t, newTestCollector(t), logger)
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 
 	const vin = "INVALIDVIN"
@@ -483,7 +554,7 @@ func TestInvalidValueProducesNothing(t *testing.T) {
 func TestInvalidValueDoesNotBecomeAnEnumLabel(t *testing.T) {
 	g := gomega.NewGomegaWithT(t)
 	logger, _ := logrus.NoOpLogger()
-	producer, err := promproducer.NewProducer(newTestCollector(t), logger)
+	producer, err := newTestProducer(t, newTestCollector(t), logger)
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 
 	const vin = "INVALIDENUMVIN"
@@ -511,7 +582,7 @@ func TestInvalidValueDoesNotBecomeAnEnumLabel(t *testing.T) {
 func TestProduceBooleanAcceptsNumericFlag(t *testing.T) {
 	g := gomega.NewGomegaWithT(t)
 	logger, hook := logrus.NoOpLogger()
-	producer, err := promproducer.NewProducer(newTestCollector(t), logger)
+	producer, err := newTestProducer(t, newTestCollector(t), logger)
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 
 	const vin = "BOOLNUMVIN"
@@ -535,7 +606,7 @@ func TestProduceBooleanAcceptsNumericFlag(t *testing.T) {
 func TestProduceBooleanRejectsNonFlagNumeric(t *testing.T) {
 	g := gomega.NewGomegaWithT(t)
 	logger, _ := logrus.NoOpLogger()
-	producer, err := promproducer.NewProducer(newTestCollector(t), logger)
+	producer, err := newTestProducer(t, newTestCollector(t), logger)
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 
 	const vin = "BOOLBADVIN"

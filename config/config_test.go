@@ -198,6 +198,15 @@ var _ = Describe("Test full application config", func() {
 
 	})
 
+	Context("configure prometheus", func() {
+		It("requires an explicit VIN allowlist", func() {
+			config.Records = map[string][]telemetry.Dispatcher{"V": {"prometheus"}}
+			_, producers, err := config.ConfigureProducers(airbrake.NewAirbrakeHandler(nil), log, true)
+			Expect(err).To(MatchError("prometheus dispatcher requires 1 to 20 prometheus_export_vins"))
+			Expect(producers).To(BeNil())
+		})
+	})
+
 	Context("configure kinesis", func() {
 		It("returns an error if kinesis isn't included", func() {
 			log, _ := logrus.NoOpLogger()

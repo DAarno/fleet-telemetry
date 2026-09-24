@@ -38,3 +38,8 @@ func (c *Gauge) SetFloat64(n float64, labels adapter.Labels) {
 	l := prometheus.Labels(labels)
 	c.gauge.With(l).Set(n)
 }
+
+// Delete removes a gauge series with this exact label set.
+func (c *Gauge) Delete(labels adapter.Labels) {
+	c.gauge.Delete(prometheus.Labels(labels))
+}

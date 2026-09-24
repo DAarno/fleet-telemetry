@@ -45,6 +45,9 @@
     "vins_signal_tracking_enabled": [
         "device-1"
     ],
+    "prometheus_export_vins": [
+        "device-1"
+    ],
     "monitoring": {
         "prometheus_metrics_port": 9090,
         "prometheus_metrics_host": "0.0.0.0",

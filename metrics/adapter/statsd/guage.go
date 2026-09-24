@@ -40,3 +40,6 @@ func (s *Gauge) SetFloat64(n float64, labels adapter.Labels) {
 	tags := getTags(labels)
 	s.client.FGauge(s.name, n, tags...)
 }
+
+// Delete is unsupported by StatsD, which has no persistent local series.
+func (s *Gauge) Delete(_ adapter.Labels) {}

@@ -21,6 +21,7 @@ import (
 // dispatches on fieldSpec.kind.
 type Producer struct {
 	logger *logrus.Logger
+	gauges gaugeSet
 
 	// exclusiveState and infoState are both instances of the same underlying
 	// problem: a Prometheus series identity (a metric name plus its full
@@ -32,10 +33,7 @@ type Producer struct {
 	infoState      map[string]map[string]string
 }
 
-// gaugeSet holds the process-wide set of gauges this producer reports on.
-// Prometheus collectors must be registered exactly once per process, so
-// they're kept separate from Producer and initialized lazily the first time a
-// producer is created.
+// gaugeSet holds the set of gauges this producer reports on.
 type gaugeSet struct {
 	byMetric       map[string]adapter.Gauge
 	updated        adapter.Gauge
@@ -43,16 +41,11 @@ type gaugeSet struct {
 	infoLabelNames []string
 }
 
-var (
-	registeredGauges gaugeSet
-	registerOnce     sync.Once
-)
-
 // NewProducer creates a new Prometheus metrics producer
 func NewProducer(metricsCollector metrics.MetricCollector, logger *logrus.Logger) (telemetry.Producer, error) {
-	registerOnce.Do(func() { registeredGauges = registerGauges(metricsCollector) })
 	return &Producer{
 		logger:         logger,
+		gauges:         registerGauges(metricsCollector),
 		exclusiveState: make(map[string]string),
 		infoState:      make(map[string]map[string]string),
 	}, nil
@@ -230,14 +223,14 @@ func (p *Producer) Produce(entry *telemetry.Record) {
 			continue
 		}
 		if spec.kind != kindInfo {
-			registeredGauges.updated.Set(now, adapter.Labels{"vin": vin, "field": spec.touchKeyOrDefault(field)})
+			p.gauges.updated.Set(now, adapter.Labels{"vin": vin, "field": spec.touchKeyOrDefault(field)})
 		}
 	}
 
 	if len(infoChanges) > 0 {
 		p.updateInfo(vin, infoChanges)
 		for label := range infoChanges {
-			registeredGauges.updated.Set(now, adapter.Labels{"vin": vin, "field": "info_" + label})
+			p.gauges.updated.Set(now, adapter.Labels{"vin": vin, "field": "info_" + label})
 		}
 	}
 }
@@ -274,13 +267,13 @@ func (p *Producer) produceNumeric(spec fieldSpec, vin string, val interface{}) b
 	if scale == 0 {
 		scale = 1
 	}
-	registeredGauges.byMetric[spec.metric].SetFloat64(v*float64(scale), familyLabels(vin, spec))
+	p.gauges.byMetric[spec.metric].SetFloat64(v*float64(scale), familyLabels(vin, spec))
 	return true
 }
 
 func (p *Producer) produceBoolean(spec fieldSpec, vin string, val interface{}) bool {
 	if b, ok := val.(bool); ok {
-		registeredGauges.byMetric[spec.metric].Set(boolToInt(b), familyLabels(vin, spec))
+		p.gauges.byMetric[spec.metric].Set(boolToInt(b), familyLabels(vin, spec))
 		return true
 	}
 	// Also accept a 0/1 numeric. Tesla does not document which encoding each
@@ -290,7 +283,7 @@ func (p *Producer) produceBoolean(spec fieldSpec, vin string, val interface{}) b
 	// rather than coerced, since that would mean the field is not a flag at
 	// all and the registry entry is simply wrong.
 	if v, ok := numericValue(val); ok && (v == 0 || v == 1) {
-		registeredGauges.byMetric[spec.metric].Set(int64(v), familyLabels(vin, spec))
+		p.gauges.byMetric[spec.metric].Set(int64(v), familyLabels(vin, spec))
 		return true
 	}
 	return false
@@ -302,7 +295,7 @@ func (p *Producer) produceEnum(spec fieldSpec, vin string, val interface{}) bool
 		return false
 	}
 	key := strings.Join([]string{spec.metric, vin, spec.extraValue}, "|")
-	p.setExclusiveState(registeredGauges.byMetric[spec.metric], key, familyLabels(vin, spec), spec.valueLabel, s)
+	p.setExclusiveState(p.gauges.byMetric[spec.metric], key, familyLabels(vin, spec), spec.valueLabel, s)
 	return true
 }
 
@@ -311,7 +304,7 @@ func (p *Producer) produceBoolMap(spec fieldSpec, vin string, val interface{}) b
 	if !ok {
 		return false
 	}
-	gauge := registeredGauges.byMetric[spec.metric]
+	gauge := p.gauges.byMetric[spec.metric]
 	for k, v := range m {
 		labels := familyLabels(vin, spec)
 		labels[spec.boolMapLabel] = camelToSnake(k)
@@ -332,7 +325,7 @@ func (p *Producer) produceScheduledTime(spec fieldSpec, vin string, val interfac
 			return false
 		}
 		seconds := t.Hour()*3600 + t.Minute()*60 + t.Second()
-		registeredGauges.byMetric[spec.metric+"_seconds_since_midnight"].Set(int64(seconds), labels)
+		p.gauges.byMetric[spec.metric+"_seconds_since_midnight"].Set(int64(seconds), labels)
 		return true
 	}
 
@@ -341,7 +334,7 @@ func (p *Producer) produceScheduledTime(spec fieldSpec, vin string, val interfac
 	// mismatch was silently dropping the field and logging an error on
 	// every payload once a schedule was actually set.
 	if v, ok := numericValue(val); ok {
-		registeredGauges.byMetric[spec.metric+"_timestamp_seconds"].Set(int64(v), labels)
+		p.gauges.byMetric[spec.metric+"_timestamp_seconds"].Set(int64(v), labels)
 		return true
 	}
 	return false
@@ -353,8 +346,8 @@ func (p *Producer) produceLocation(spec fieldSpec, vin string, val interface{}) 
 		return false
 	}
 	labels := familyLabels(vin, spec)
-	registeredGauges.byMetric[spec.metric+"_latitude_degrees"].SetFloat64(loc["latitude"], labels)
-	registeredGauges.byMetric[spec.metric+"_longitude_degrees"].SetFloat64(loc["longitude"], labels)
+	p.gauges.byMetric[spec.metric+"_latitude_degrees"].SetFloat64(loc["latitude"], labels)
+	p.gauges.byMetric[spec.metric+"_longitude_degrees"].SetFloat64(loc["longitude"], labels)
 	return true
 }
 
@@ -420,8 +413,8 @@ func (p *Producer) updateInfo(vin string, changes map[string]string) {
 	defer p.mu.Unlock()
 
 	old := p.infoState[vin]
-	next := make(map[string]string, len(registeredGauges.infoLabelNames))
-	for _, name := range registeredGauges.infoLabelNames {
+	next := make(map[string]string, len(p.gauges.infoLabelNames))
+	for _, name := range p.gauges.infoLabelNames {
 		next[name] = ""
 	}
 	for k, v := range old {
@@ -435,9 +428,9 @@ func (p *Producer) updateInfo(vin string, changes map[string]string) {
 		return
 	}
 	if old != nil {
-		registeredGauges.info.Set(0, labelsWithVin(vin, old))
+		p.gauges.info.Set(0, labelsWithVin(vin, old))
 	}
-	registeredGauges.info.Set(1, labelsWithVin(vin, next))
+	p.gauges.info.Set(1, labelsWithVin(vin, next))
 	p.infoState[vin] = next
 }
 

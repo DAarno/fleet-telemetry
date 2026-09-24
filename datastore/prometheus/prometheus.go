@@ -64,8 +64,8 @@ func NewProducer(metricsCollector metrics.MetricCollector, logger *logrus.Logger
 var helpText = map[string]string{
 	"vehicle_battery_soc":                         "Battery state of charge (percentage)",
 	"vehicle_charge_limit_soc":                    "Configured battery charge limit (percentage)",
-	"vehicle_location_latitude_millidegrees":      "Last known vehicle latitude, in thousandths of a degree",
-	"vehicle_location_longitude_millidegrees":     "Last known vehicle longitude, in thousandths of a degree",
+	"vehicle_location_latitude_degrees":           "Last known vehicle latitude, in degrees",
+	"vehicle_location_longitude_degrees":          "Last known vehicle longitude, in degrees",
 	"vehicle_charge_state":                        "Current charging state as an info metric (1 = current)",
 	"vehicle_charging_cable":                      "Current charging cable type as an info metric (1 = current)",
 	"vehicle_telemetry_updated_timestamp_seconds": "Unix time this field was last reported by the vehicle",
@@ -89,7 +89,7 @@ func help(metric string) string {
 
 // registerGauges computes, from fieldRegistry, the full set of distinct
 // Prometheus metrics needed (several fields may share one metric name as a
-// "family", e.g. all four TPMS sensors under vehicle_tire_pressure_millibar)
+// "family", e.g. all four TPMS sensors under vehicle_tire_pressure_pascals)
 // and registers each exactly once.
 func registerGauges(m metrics.MetricCollector) gaugeSet {
 	labelSets := map[string]map[string]bool{}
@@ -111,8 +111,8 @@ func registerGauges(m metrics.MetricCollector) gaugeSet {
 		case kindInfo:
 			infoLabels[spec.infoLabel] = true
 		case kindLocation:
-			ensure(spec.metric+"_latitude_millidegrees", spec.extraLabel)
-			ensure(spec.metric+"_longitude_millidegrees", spec.extraLabel)
+			ensure(spec.metric+"_latitude_degrees", spec.extraLabel)
+			ensure(spec.metric+"_longitude_degrees", spec.extraLabel)
 		case kindScheduledTime:
 			ensure(spec.metric+"_timestamp_seconds", spec.extraLabel)
 			ensure(spec.metric+"_seconds_since_midnight", spec.extraLabel)
@@ -353,8 +353,8 @@ func (p *Producer) produceLocation(spec fieldSpec, vin string, val interface{}) 
 		return false
 	}
 	labels := familyLabels(vin, spec)
-	registeredGauges.byMetric[spec.metric+"_latitude_millidegrees"].SetFloat64(loc["latitude"]*1000, labels)
-	registeredGauges.byMetric[spec.metric+"_longitude_millidegrees"].SetFloat64(loc["longitude"]*1000, labels)
+	registeredGauges.byMetric[spec.metric+"_latitude_degrees"].SetFloat64(loc["latitude"], labels)
+	registeredGauges.byMetric[spec.metric+"_longitude_degrees"].SetFloat64(loc["longitude"], labels)
 	return true
 }
 

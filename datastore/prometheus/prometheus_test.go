@@ -51,8 +51,8 @@ func TestProduceSetsMetrics(t *testing.T) {
 
 	g.Expect(gaugeValue(mfs, "vehicle_battery_soc", "TESTVIN")).To(gomega.BeNumerically("~", 84.71, 0.01))
 	g.Expect(gaugeValue(mfs, "vehicle_charge_limit_soc", "TESTVIN")).To(gomega.Equal(float64(90)))
-	g.Expect(gaugeValue(mfs, "vehicle_location_latitude_millidegrees", "TESTVIN")).To(gomega.Equal(float64(37400)))
-	g.Expect(gaugeValue(mfs, "vehicle_location_longitude_millidegrees", "TESTVIN")).To(gomega.Equal(float64(-122100)))
+	g.Expect(gaugeValue(mfs, "vehicle_location_latitude_degrees", "TESTVIN")).To(gomega.Equal(float64(37.4)))
+	g.Expect(gaugeValue(mfs, "vehicle_location_longitude_degrees", "TESTVIN")).To(gomega.Equal(float64(-122.1)))
 }
 
 // TestProduceSetsFieldUpdateTimestamps checks that vehicle_telemetry_updated_timestamp_seconds
@@ -219,10 +219,9 @@ func send(t *testing.T, producer telemetry.Producer, vin string, datum *protos.D
 	producer.Produce(record)
 }
 
-// TestProduceScalesNumericFields checks the milli-scaling applied to
-// continuously-varying physical measurements, since adapter.Gauge only
-// supports int64 -- without a scale, e.g. 21.5C would truncate to 21.
-func TestProduceScalesNumericFields(t *testing.T) {
+// TestProducePreservesFractionalMeasurements checks that fractional telemetry
+// values survive gauge dispatch in their named physical unit.
+func TestProducePreservesFractionalMeasurements(t *testing.T) {
 	g := gomega.NewGomegaWithT(t)
 	logger, _ := logrus.NoOpLogger()
 	producer, err := promproducer.NewProducer(promadapter.NewCollector(), logger)
@@ -230,11 +229,16 @@ func TestProduceScalesNumericFields(t *testing.T) {
 
 	const vin = "SCALEVIN"
 	send(t, producer, vin, &protos.Datum{Key: protos.Field_InsideTemp, Value: &protos.Value{Value: &protos.Value_FloatValue{FloatValue: 21.5}}})
+	send(t, producer, vin, &protos.Datum{Key: protos.Field_ChargerVoltage, Value: &protos.Value{Value: &protos.Value_FloatValue{FloatValue: 231.725}}})
+	send(t, producer, vin, &protos.Datum{Key: protos.Field_TpmsPressureFl, Value: &protos.Value{Value: &protos.Value_FloatValue{FloatValue: 2.5}}})
 
 	mfs, err := promclient.DefaultGatherer.Gather()
 	g.Expect(err).ToNot(gomega.HaveOccurred())
-	g.Expect(gaugeValueForLabels(mfs, "vehicle_temp_millicelsius",
-		map[string]string{"vin": vin, "location": "inside"})).To(gomega.Equal(float64(21500)))
+	g.Expect(gaugeValueForLabels(mfs, "vehicle_temp_celsius",
+		map[string]string{"vin": vin, "location": "inside"})).To(gomega.Equal(float64(21.5)))
+	g.Expect(gaugeValue(mfs, "vehicle_charger_voltage_volts", vin)).To(gomega.BeNumerically("~", 231.725, 0.00001))
+	g.Expect(gaugeValueForLabels(mfs, "vehicle_tire_pressure_pascals",
+		map[string]string{"vin": vin, "tire": "front_left"})).To(gomega.Equal(float64(250000)))
 }
 
 // TestProduceHandlesDoorBooleans checks the independent-booleans path (no
@@ -357,8 +361,8 @@ func TestProduceLocationFamily(t *testing.T) {
 
 	mfs, err := promclient.DefaultGatherer.Gather()
 	g.Expect(err).ToNot(gomega.HaveOccurred())
-	g.Expect(gaugeValueForLabels(mfs, "vehicle_trip_location_latitude_millidegrees",
-		map[string]string{"vin": vin, "kind": "origin"})).To(gomega.Equal(float64(47390)))
+	g.Expect(gaugeValueForLabels(mfs, "vehicle_trip_location_latitude_degrees",
+		map[string]string{"vin": vin, "kind": "origin"})).To(gomega.Equal(float64(47.39)))
 }
 
 // TestProduceInfoGaugeTracksChanges is the vehicle_info analogue of

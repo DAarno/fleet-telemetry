@@ -82,7 +82,7 @@ func TestFamilyMembersAgreeOnLabelSchema(t *testing.T) {
 		got := schema{kind: spec.kind, extraLabel: spec.extraLabel, valueLabel: spec.valueLabel, boolMapLabel: spec.boolMapLabel}
 		metricNames := []string{spec.metric}
 		if spec.kind == kindLocation {
-			metricNames = []string{spec.metric + "_latitude_millidegrees", spec.metric + "_longitude_millidegrees"}
+			metricNames = []string{spec.metric + "_latitude_degrees", spec.metric + "_longitude_degrees"}
 		}
 		for _, name := range metricNames {
 			if want, ok := seen[name]; ok {

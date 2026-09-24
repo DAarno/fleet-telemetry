@@ -249,13 +249,13 @@ var _ = Describe("Test messages", Ordered, func() {
 			// The location arrives as a string and is parsed into a
 			// LocationValue before dispatch (see telemetry/record.go), so the
 			// producer sees the same coordinates VerifyMessageBody asserts on.
-			// Millidegrees, because adapter.Gauge is integer-valued.
+			// The gauge preserves the coordinates in degrees.
 			Eventually(func() (string, error) {
 				body, err := VerifyHTTPRequest(prometheusURL, "metrics")
 				return string(body), err
 			}, 10*time.Second, 500*time.Millisecond).Should(SatisfyAll(
-				ContainSubstring(fmt.Sprintf(`vehicle_location_latitude_millidegrees{vin="%s"} -37412`, deviceID)),
-				ContainSubstring(fmt.Sprintf(`vehicle_location_longitude_millidegrees{vin="%s"} 122145`, deviceID)),
+				ContainSubstring(fmt.Sprintf(`vehicle_location_latitude_degrees{vin="%s"} -37.412374`, deviceID)),
+				ContainSubstring(fmt.Sprintf(`vehicle_location_longitude_degrees{vin="%s"} 122.145867`, deviceID)),
 				// Freshness timestamp for the field, so a consumer can tell a
 				// value just reported from one the vehicle has not sent in hours.
 				ContainSubstring(fmt.Sprintf(`vehicle_telemetry_updated_timestamp_seconds{field="location",vin="%s"}`, deviceID)),

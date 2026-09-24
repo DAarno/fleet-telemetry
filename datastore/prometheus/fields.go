@@ -49,8 +49,8 @@ const (
 	// not be plotted as one. The wall-clock time in Pacific is the part
 	// that carries the user's intent.
 	kindScheduledTime
-	// kindLocation is a lat/lon pair, reported in millidegrees across two
-	// gauges (adapter.Gauge only supports int64).
+	// kindLocation is a lat/lon pair, reported in degrees across two
+	// float-valued gauges.
 	kindLocation
 	// kindInfo contributes one label to the single, rarely-changing
 	// vehicle_info gauge (CarType, Trim, firmware version, etc.) rather than
@@ -64,9 +64,9 @@ type fieldSpec struct {
 
 	// metric is the Prometheus metric name. Several fields may share one
 	// metric name as a "family" distinguished by extraLabel/extraValue (e.g.
-	// all four TpmsPressure* fields share vehicle_tire_pressure_millibar,
+	// all four TpmsPressure* fields share vehicle_tire_pressure_pascals,
 	// with extraLabel "tire"). For kindLocation, metric is a prefix and
-	// "_latitude_millidegrees"/"_longitude_millidegrees" is appended.
+	// "_latitude_degrees"/"_longitude_degrees" is appended.
 	metric string
 
 	// extraLabel/extraValue add one fixed label identifying which member of
@@ -87,9 +87,8 @@ type fieldSpec struct {
 	// vehicle_info gauge. Required for kindInfo.
 	infoLabel string
 
-	// scale multiplies a kindNumeric value before truncating to int64,
-	// preserving sub-unit precision (e.g. 1000 for Celsius->millicelsius,
-	// or a kW->W / kWh->Wh unit conversion). Zero means 1 (no scaling).
+	// scale converts a kindNumeric value to the metric unit (e.g. 1000
+	// for kW->W / kWh->Wh, or 100000 for bar->Pa). Zero means 1.
 	scale int64
 
 	// touchKey overrides the automatically-derived (from the field's proto
@@ -156,9 +155,9 @@ var fieldRegistry = map[protos.Field]fieldSpec{
 	protos.Field_ChargingCableType:                  {kind: kindEnum, metric: "vehicle_charging_cable", valueLabel: "cable", touchKey: "charging_cable"},
 	protos.Field_DetailedChargeState:                {kind: kindEnum, metric: "vehicle_detailed_charge_state", valueLabel: "state"},
 	protos.Field_BatteryLevel:                       {kind: kindNumeric, metric: "vehicle_battery_level_percent"},
-	protos.Field_ChargeAmps:                         {kind: kindNumeric, metric: "vehicle_charge_amps_milliamps", scale: 1000},
-	protos.Field_ChargeCurrentRequest:               {kind: kindNumeric, metric: "vehicle_charge_current_request_amps", extraLabel: "kind", extraValue: "requested"},
-	protos.Field_ChargeCurrentRequestMax:            {kind: kindNumeric, metric: "vehicle_charge_current_request_amps", extraLabel: "kind", extraValue: "max"},
+	protos.Field_ChargeAmps:                         {kind: kindNumeric, metric: "vehicle_charge_current_amperes"},
+	protos.Field_ChargeCurrentRequest:               {kind: kindNumeric, metric: "vehicle_charge_current_request_amperes", extraLabel: "kind", extraValue: "requested"},
+	protos.Field_ChargeCurrentRequestMax:            {kind: kindNumeric, metric: "vehicle_charge_current_request_amperes", extraLabel: "kind", extraValue: "max"},
 	protos.Field_ChargeEnableRequest:                {kind: kindBoolean, metric: "vehicle_charge_enable_request"},
 	protos.Field_ChargePort:                         {kind: kindEnum, metric: "vehicle_charge_port_state", valueLabel: "state"},
 	protos.Field_ChargePortColdWeatherMode:          {kind: kindBoolean, metric: "vehicle_charge_port_cold_weather_mode"},
@@ -166,7 +165,7 @@ var fieldRegistry = map[protos.Field]fieldSpec{
 	protos.Field_ChargePortLatch:                    {kind: kindEnum, metric: "vehicle_charge_port_latch_state", valueLabel: "state"},
 	protos.Field_ChargeRateMilePerHour:              {kind: kindNumeric, metric: "vehicle_charge_rate_miles_per_hour"},
 	protos.Field_ChargerPhases:                      {kind: kindNumeric, metric: "vehicle_charger_phases"},
-	protos.Field_ChargerVoltage:                     {kind: kindNumeric, metric: "vehicle_charger_voltage_millivolts", scale: 1000},
+	protos.Field_ChargerVoltage:                     {kind: kindNumeric, metric: "vehicle_charger_voltage_volts"},
 	protos.Field_ACChargingPower:                    {kind: kindNumeric, metric: "vehicle_charging_power_watts", extraLabel: "source", extraValue: "ac", scale: 1000},
 	protos.Field_DCChargingPower:                    {kind: kindNumeric, metric: "vehicle_charging_power_watts", extraLabel: "source", extraValue: "dc", scale: 1000},
 	protos.Field_ACChargingEnergyIn:                 {kind: kindNumeric, metric: "vehicle_charging_energy_in_watt_hours", extraLabel: "source", extraValue: "ac", scale: 1000},
@@ -196,14 +195,14 @@ var fieldRegistry = map[protos.Field]fieldSpec{
 	protos.Field_PowershareType:                     {kind: kindEnum, metric: "vehicle_powershare_type", valueLabel: "type"},
 
 	// --- Battery / BMS internals ---
-	protos.Field_PackVoltage:              {kind: kindNumeric, metric: "vehicle_pack_voltage_millivolts", scale: 1000},
-	protos.Field_PackCurrent:              {kind: kindNumeric, metric: "vehicle_pack_current_milliamps", scale: 1000},
-	protos.Field_BrickVoltageMax:          {kind: kindNumeric, metric: "vehicle_brick_voltage_millivolts", extraLabel: "kind", extraValue: "max", scale: 1000},
-	protos.Field_BrickVoltageMin:          {kind: kindNumeric, metric: "vehicle_brick_voltage_millivolts", extraLabel: "kind", extraValue: "min", scale: 1000},
+	protos.Field_PackVoltage:              {kind: kindNumeric, metric: "vehicle_pack_voltage_volts"},
+	protos.Field_PackCurrent:              {kind: kindNumeric, metric: "vehicle_pack_current_amperes"},
+	protos.Field_BrickVoltageMax:          {kind: kindNumeric, metric: "vehicle_brick_voltage_volts", extraLabel: "kind", extraValue: "max"},
+	protos.Field_BrickVoltageMin:          {kind: kindNumeric, metric: "vehicle_brick_voltage_volts", extraLabel: "kind", extraValue: "min"},
 	protos.Field_NumBrickVoltageMax:       {kind: kindNumeric, metric: "vehicle_brick_index", extraLabel: "extreme", extraValue: "max_voltage"},
 	protos.Field_NumBrickVoltageMin:       {kind: kindNumeric, metric: "vehicle_brick_index", extraLabel: "extreme", extraValue: "min_voltage"},
-	protos.Field_ModuleTempMax:            {kind: kindNumeric, metric: "vehicle_module_temp_millicelsius", extraLabel: "kind", extraValue: "max", scale: 1000},
-	protos.Field_ModuleTempMin:            {kind: kindNumeric, metric: "vehicle_module_temp_millicelsius", extraLabel: "kind", extraValue: "min", scale: 1000},
+	protos.Field_ModuleTempMax:            {kind: kindNumeric, metric: "vehicle_module_temp_celsius", extraLabel: "kind", extraValue: "max"},
+	protos.Field_ModuleTempMin:            {kind: kindNumeric, metric: "vehicle_module_temp_celsius", extraLabel: "kind", extraValue: "min"},
 	protos.Field_NumModuleTempMax:         {kind: kindNumeric, metric: "vehicle_module_index", extraLabel: "extreme", extraValue: "max_temp"},
 	protos.Field_NumModuleTempMin:         {kind: kindNumeric, metric: "vehicle_module_index", extraLabel: "extreme", extraValue: "min_temp"},
 	protos.Field_IsolationResistance:      {kind: kindNumeric, metric: "vehicle_isolation_resistance", reason: "unit not documented by Tesla; exposed unscaled as reported"},
@@ -219,7 +218,7 @@ var fieldRegistry = map[protos.Field]fieldSpec{
 	protos.Field_DestinationLocation:           {kind: kindLocation, metric: "vehicle_trip_location", extraLabel: "kind", extraValue: "destination"},
 	protos.Field_GpsHeading:                    {kind: kindNumeric, metric: "vehicle_gps_heading_degrees"},
 	protos.Field_GpsState:                      {kind: kindBoolean, metric: "vehicle_gps_locked"},
-	protos.Field_GpsAccuracyMeters:             {kind: kindNumeric, metric: "vehicle_gps_accuracy_millimeters", scale: 1000},
+	protos.Field_GpsAccuracyMeters:             {kind: kindNumeric, metric: "vehicle_gps_accuracy_meters"},
 	protos.Field_LocatedAtHome:                 {kind: kindBoolean, metric: "vehicle_located_at", extraLabel: "place", extraValue: "home"},
 	protos.Field_LocatedAtWork:                 {kind: kindBoolean, metric: "vehicle_located_at", extraLabel: "place", extraValue: "work"},
 	protos.Field_LocatedAtFavorite:             {kind: kindBoolean, metric: "vehicle_located_at", extraLabel: "place", extraValue: "favorite"},
@@ -232,15 +231,15 @@ var fieldRegistry = map[protos.Field]fieldSpec{
 	protos.Field_DestinationName:               excluded(reasonFreeText),
 
 	// --- Climate / HVAC ---
-	protos.Field_InsideTemp:                              {kind: kindNumeric, metric: "vehicle_temp_millicelsius", extraLabel: "location", extraValue: "inside", scale: 1000},
-	protos.Field_OutsideTemp:                             {kind: kindNumeric, metric: "vehicle_temp_millicelsius", extraLabel: "location", extraValue: "outside", scale: 1000},
+	protos.Field_InsideTemp:                              {kind: kindNumeric, metric: "vehicle_temp_celsius", extraLabel: "location", extraValue: "inside"},
+	protos.Field_OutsideTemp:                             {kind: kindNumeric, metric: "vehicle_temp_celsius", extraLabel: "location", extraValue: "outside"},
 	protos.Field_HvacACEnabled:                           {kind: kindBoolean, metric: "vehicle_hvac_ac_enabled"},
 	protos.Field_HvacAutoMode:                            {kind: kindEnum, metric: "vehicle_hvac_auto_mode", valueLabel: "mode"},
 	protos.Field_HvacFanSpeed:                            {kind: kindNumeric, metric: "vehicle_hvac_fan_speed"},
 	protos.Field_HvacFanStatus:                           {kind: kindNumeric, metric: "vehicle_hvac_fan_status_segment"},
 	protos.Field_HvacPower:                               {kind: kindEnum, metric: "vehicle_hvac_power_state", valueLabel: "state"},
-	protos.Field_HvacLeftTemperatureRequest:              {kind: kindNumeric, metric: "vehicle_hvac_temperature_request_millicelsius", extraLabel: "side", extraValue: "left", scale: 1000},
-	protos.Field_HvacRightTemperatureRequest:             {kind: kindNumeric, metric: "vehicle_hvac_temperature_request_millicelsius", extraLabel: "side", extraValue: "right", scale: 1000},
+	protos.Field_HvacLeftTemperatureRequest:              {kind: kindNumeric, metric: "vehicle_hvac_temperature_request_celsius", extraLabel: "side", extraValue: "left"},
+	protos.Field_HvacRightTemperatureRequest:             {kind: kindNumeric, metric: "vehicle_hvac_temperature_request_celsius", extraLabel: "side", extraValue: "right"},
 	protos.Field_HvacSteeringWheelHeatAuto:               {kind: kindBoolean, metric: "vehicle_hvac_steering_wheel_heat_auto"},
 	protos.Field_HvacSteeringWheelHeatLevel:              {kind: kindNumeric, metric: "vehicle_hvac_steering_wheel_heat_level"},
 	protos.Field_DefrostMode:                             {kind: kindEnum, metric: "vehicle_defrost_mode", valueLabel: "mode"},
@@ -289,10 +288,10 @@ var fieldRegistry = map[protos.Field]fieldSpec{
 	protos.Field_ServiceMode:                {kind: kindBoolean, metric: "vehicle_service_mode"},
 
 	// --- Tires ---
-	protos.Field_TpmsPressureFl:             {kind: kindNumeric, metric: "vehicle_tire_pressure_millibar", extraLabel: "tire", extraValue: "front_left", scale: 1000},
-	protos.Field_TpmsPressureFr:             {kind: kindNumeric, metric: "vehicle_tire_pressure_millibar", extraLabel: "tire", extraValue: "front_right", scale: 1000},
-	protos.Field_TpmsPressureRl:             {kind: kindNumeric, metric: "vehicle_tire_pressure_millibar", extraLabel: "tire", extraValue: "rear_left", scale: 1000},
-	protos.Field_TpmsPressureRr:             {kind: kindNumeric, metric: "vehicle_tire_pressure_millibar", extraLabel: "tire", extraValue: "rear_right", scale: 1000},
+	protos.Field_TpmsPressureFl:             {kind: kindNumeric, metric: "vehicle_tire_pressure_pascals", extraLabel: "tire", extraValue: "front_left", scale: 100000},
+	protos.Field_TpmsPressureFr:             {kind: kindNumeric, metric: "vehicle_tire_pressure_pascals", extraLabel: "tire", extraValue: "front_right", scale: 100000},
+	protos.Field_TpmsPressureRl:             {kind: kindNumeric, metric: "vehicle_tire_pressure_pascals", extraLabel: "tire", extraValue: "rear_left", scale: 100000},
+	protos.Field_TpmsPressureRr:             {kind: kindNumeric, metric: "vehicle_tire_pressure_pascals", extraLabel: "tire", extraValue: "rear_right", scale: 100000},
 	protos.Field_TpmsLastSeenPressureTimeFl: {kind: kindNumeric, metric: "vehicle_tire_pressure_last_seen_timestamp_seconds", extraLabel: "tire", extraValue: "front_left"},
 	protos.Field_TpmsLastSeenPressureTimeFr: {kind: kindNumeric, metric: "vehicle_tire_pressure_last_seen_timestamp_seconds", extraLabel: "tire", extraValue: "front_right"},
 	protos.Field_TpmsLastSeenPressureTimeRl: {kind: kindNumeric, metric: "vehicle_tire_pressure_last_seen_timestamp_seconds", extraLabel: "tire", extraValue: "rear_left"},

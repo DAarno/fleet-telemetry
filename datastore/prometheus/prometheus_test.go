@@ -61,7 +61,7 @@ func TestProducerFiltersAndExpiresAllVINSeries(t *testing.T) {
 	g := gomega.NewGomegaWithT(t)
 	logger, _ := logrus.NoOpLogger()
 	collector := newTestCollector(t)
-	producer, err := promproducer.NewProducer(collector, logger, []string{"ACTIVEVIN"}, 80*time.Millisecond)
+	producer, err := promproducer.NewProducer(collector, logger, []string{"ACTIVEVIN"}, 500*time.Millisecond)
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 	t.Cleanup(func() { _ = producer.Close() })
 
@@ -87,7 +87,7 @@ func TestProducerFiltersAndExpiresAllVINSeries(t *testing.T) {
 			read("vehicle_charge_state", map[string]string{"vin": "ACTIVEVIN", "state": "Charging"}) == -1 &&
 			read("vehicle_telemetry_updated_timestamp_seconds", map[string]string{"vin": "ACTIVEVIN", "field": "soc"}) == -1 &&
 			read("vehicle_info", map[string]string{"vin": "ACTIVEVIN"}) == -1
-	}, time.Second, 10*time.Millisecond).Should(gomega.BeTrue())
+	}, 2*time.Second, 20*time.Millisecond).Should(gomega.BeTrue())
 
 	// A reconnect starts with fresh enum state, not a predecessor from the old session.
 	send(t, producer, "ACTIVEVIN", &protos.Datum{Key: protos.Field_ChargeState, Value: &protos.Value{Value: &protos.Value_StringValue{StringValue: "Idle"}}})

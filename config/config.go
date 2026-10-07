@@ -103,8 +103,8 @@ type Config struct {
 
 	VinsSignalTrackingEnabled []string `json:"vins_signal_tracking_enabled"`
 
-	// PrometheusExportVINs bounds per-vehicle gauge cardinality. Required when
-	// the Prometheus dispatcher is enabled; unrelated to signal accounting.
+	// PrometheusExportVINs optionally filters exports to 1-20 unique VINs.
+	// An omitted or empty filter exports all VINs; unrelated to signal accounting.
 	PrometheusExportVINs []string `json:"prometheus_export_vins,omitempty"`
 
 	// MetricCollector collects metrics for the application

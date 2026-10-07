@@ -40,9 +40,9 @@ func newTestCollector(t *testing.T) *promadapter.Collector {
 	return collector
 }
 
-func TestProducerRequiresBoundedVINAllowlist(t *testing.T) {
+func TestProducerValidatesNonemptyVINFilter(t *testing.T) {
 	logger, _ := logrus.NoOpLogger()
-	for _, vins := range [][]string{nil, {""}, {"DUP", "DUP"}} {
+	for _, vins := range [][]string{{""}, {"DUP", "DUP"}} {
 		_, err := promproducer.NewProducer(newTestCollector(t), logger, vins, time.Hour)
 		if err == nil {
 			t.Fatalf("accepted invalid VIN allowlist %v", vins)
@@ -57,42 +57,88 @@ func TestProducerRequiresBoundedVINAllowlist(t *testing.T) {
 	}
 }
 
-func TestProducerFiltersAndExpiresAllVINSeries(t *testing.T) {
-	g := gomega.NewGomegaWithT(t)
-	logger, _ := logrus.NoOpLogger()
-	collector := newTestCollector(t)
-	producer, err := promproducer.NewProducer(collector, logger, []string{"ACTIVEVIN"}, 500*time.Millisecond)
-	g.Expect(err).ToNot(gomega.HaveOccurred())
-	t.Cleanup(func() { _ = producer.Close() })
-
-	send(t, producer, "OTHER", &protos.Datum{Key: protos.Field_Soc, Value: &protos.Value{Value: &protos.Value_IntValue{IntValue: 20}}})
-	send(t, producer, "ACTIVEVIN", &protos.Datum{Key: protos.Field_Soc, Value: &protos.Value{Value: &protos.Value_IntValue{IntValue: 80}}})
-	send(t, producer, "ACTIVEVIN", &protos.Datum{Key: protos.Field_ChargeState, Value: &protos.Value{Value: &protos.Value_StringValue{StringValue: "Charging"}}})
-	send(t, producer, "ACTIVEVIN", &protos.Datum{Key: protos.Field_CarType, Value: &protos.Value{Value: &protos.Value_CarTypeValue{CarTypeValue: protos.CarTypeValue_CarTypeModelY}}})
-
-	read := func(metric string, labels map[string]string) float64 {
-		mfs, err := promclient.DefaultGatherer.Gather()
-		g.Expect(err).ToNot(gomega.HaveOccurred())
-		return gaugeValueForLabels(mfs, metric, labels)
+func TestProducerExportsAllVINsWithoutFilter(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		vins []string
+	}{
+		{name: "omitted"},
+		{name: "empty", vins: []string{}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			g := gomega.NewGomegaWithT(t)
+			logger, _ := logrus.NoOpLogger()
+			producer, err := promproducer.NewProducer(newTestCollector(t), logger, test.vins, time.Hour)
+			g.Expect(err).ToNot(gomega.HaveOccurred())
+			t.Cleanup(func() { _ = producer.Close() })
+			// Unfiltered exports have no 20-vehicle cap.
+			for i := 0; i < 25; i++ {
+				send(t, producer, fmt.Sprintf("VIN%02d", i), &protos.Datum{Key: protos.Field_Soc, Value: &protos.Value{Value: &protos.Value_IntValue{IntValue: int32(i)}}})
+			}
+			mfs, err := promclient.DefaultGatherer.Gather()
+			g.Expect(err).ToNot(gomega.HaveOccurred())
+			for i := 0; i < 25; i++ {
+				vin := fmt.Sprintf("VIN%02d", i)
+				g.Expect(gaugeValue(mfs, "vehicle_battery_soc", vin)).To(gomega.Equal(float64(i)))
+				g.Expect(gaugeValueForLabels(mfs, "vehicle_telemetry_updated_timestamp_seconds", map[string]string{"vin": vin, "field": "soc"})).To(gomega.BeNumerically(">", 0))
+			}
+		})
 	}
-	g.Expect(read("vehicle_battery_soc", map[string]string{"vin": "OTHER"})).To(gomega.Equal(float64(-1)))
-	g.Expect(read("vehicle_battery_soc", map[string]string{"vin": "ACTIVEVIN"})).To(gomega.Equal(float64(80)))
-	g.Expect(read("vehicle_charge_state", map[string]string{"vin": "ACTIVEVIN", "state": "Charging"})).To(gomega.Equal(float64(1)))
-	g.Expect(read("vehicle_telemetry_updated_timestamp_seconds", map[string]string{"vin": "ACTIVEVIN", "field": "soc"})).To(gomega.BeNumerically(">", 0))
-	// The info label set is long; a VIN lookup is enough to prove the series exists.
-	g.Expect(read("vehicle_info", map[string]string{"vin": "ACTIVEVIN"})).To(gomega.Equal(float64(1)))
+}
 
-	g.Eventually(func() bool {
-		return read("vehicle_battery_soc", map[string]string{"vin": "ACTIVEVIN"}) == -1 &&
-			read("vehicle_charge_state", map[string]string{"vin": "ACTIVEVIN", "state": "Charging"}) == -1 &&
-			read("vehicle_telemetry_updated_timestamp_seconds", map[string]string{"vin": "ACTIVEVIN", "field": "soc"}) == -1 &&
-			read("vehicle_info", map[string]string{"vin": "ACTIVEVIN"}) == -1
-	}, 2*time.Second, 20*time.Millisecond).Should(gomega.BeTrue())
+func TestProducerFiltersAndExpiresAllVINSeries(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		vins []string
+	}{
+		{name: "filtered", vins: []string{"ACTIVEVIN"}},
+		{name: "omitted"},
+		{name: "empty", vins: []string{}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			g := gomega.NewGomegaWithT(t)
+			logger, _ := logrus.NoOpLogger()
+			collector := newTestCollector(t)
+			producer, err := promproducer.NewProducer(collector, logger, test.vins, 500*time.Millisecond)
+			g.Expect(err).ToNot(gomega.HaveOccurred())
+			t.Cleanup(func() { _ = producer.Close() })
 
-	// A reconnect starts with fresh enum state, not a predecessor from the old session.
-	send(t, producer, "ACTIVEVIN", &protos.Datum{Key: protos.Field_ChargeState, Value: &protos.Value{Value: &protos.Value_StringValue{StringValue: "Idle"}}})
-	g.Expect(read("vehicle_charge_state", map[string]string{"vin": "ACTIVEVIN", "state": "Idle"})).To(gomega.Equal(float64(1)))
-	g.Expect(read("vehicle_charge_state", map[string]string{"vin": "ACTIVEVIN", "state": "Charging"})).To(gomega.Equal(float64(-1)))
+			send(t, producer, "OTHER", &protos.Datum{Key: protos.Field_Soc, Value: &protos.Value{Value: &protos.Value_IntValue{IntValue: 20}}})
+			send(t, producer, "ACTIVEVIN", &protos.Datum{Key: protos.Field_Soc, Value: &protos.Value{Value: &protos.Value_IntValue{IntValue: 80}}})
+			send(t, producer, "ACTIVEVIN", &protos.Datum{Key: protos.Field_ChargeState, Value: &protos.Value{Value: &protos.Value_StringValue{StringValue: "Charging"}}})
+			send(t, producer, "ACTIVEVIN", &protos.Datum{Key: protos.Field_CarType, Value: &protos.Value{Value: &protos.Value_CarTypeValue{CarTypeValue: protos.CarTypeValue_CarTypeModelY}}})
+
+			read := func(metric string, labels map[string]string) float64 {
+				mfs, err := promclient.DefaultGatherer.Gather()
+				g.Expect(err).ToNot(gomega.HaveOccurred())
+				return gaugeValueForLabels(mfs, metric, labels)
+			}
+			otherValue := float64(20)
+			if len(test.vins) > 0 {
+				otherValue = -1
+			}
+			g.Expect(read("vehicle_battery_soc", map[string]string{"vin": "OTHER"})).To(gomega.Equal(otherValue))
+			g.Expect(read("vehicle_battery_soc", map[string]string{"vin": "ACTIVEVIN"})).To(gomega.Equal(float64(80)))
+			g.Expect(read("vehicle_charge_state", map[string]string{"vin": "ACTIVEVIN", "state": "Charging"})).To(gomega.Equal(float64(1)))
+			g.Expect(read("vehicle_telemetry_updated_timestamp_seconds", map[string]string{"vin": "ACTIVEVIN", "field": "soc"})).To(gomega.BeNumerically(">", 0))
+			// The info label set is long; a VIN lookup is enough to prove the series exists.
+			g.Expect(read("vehicle_info", map[string]string{"vin": "ACTIVEVIN"})).To(gomega.Equal(float64(1)))
+
+			g.Eventually(func() bool {
+				return read("vehicle_battery_soc", map[string]string{"vin": "OTHER"}) == -1 &&
+					read("vehicle_battery_soc", map[string]string{"vin": "ACTIVEVIN"}) == -1 &&
+					read("vehicle_charge_state", map[string]string{"vin": "ACTIVEVIN", "state": "Charging"}) == -1 &&
+					read("vehicle_telemetry_updated_timestamp_seconds", map[string]string{"vin": "ACTIVEVIN", "field": "soc"}) == -1 &&
+					read("vehicle_info", map[string]string{"vin": "ACTIVEVIN"}) == -1
+			}, 2*time.Second, 20*time.Millisecond).Should(gomega.BeTrue())
+
+			// A reconnect starts with fresh enum state, not a predecessor from the old session.
+			send(t, producer, "ACTIVEVIN", &protos.Datum{Key: protos.Field_ChargeState, Value: &protos.Value{Value: &protos.Value_StringValue{StringValue: "Idle"}}})
+			g.Expect(read("vehicle_charge_state", map[string]string{"vin": "ACTIVEVIN", "state": "Idle"})).To(gomega.Equal(float64(1)))
+			g.Expect(read("vehicle_charge_state", map[string]string{"vin": "ACTIVEVIN", "state": "Charging"})).To(gomega.Equal(float64(-1)))
+
+		})
+	}
 }
 
 func TestProduceSetsMetrics(t *testing.T) {

@@ -54,11 +54,11 @@ type gaugeSet struct {
 	infoLabelNames []string
 }
 
-// NewProducer creates a bounded Prometheus metrics producer. An explicit VIN
-// allowlist prevents a large fleet from accidentally exporting every car.
+// NewProducer creates a Prometheus metrics producer. An empty VIN filter
+// exports all vehicles; a nonempty filter restricts exports to those VINs.
 func NewProducer(metricsCollector metrics.MetricCollector, logger *logrus.Logger, vins []string, retention time.Duration) (telemetry.Producer, error) {
-	if len(vins) == 0 || len(vins) > 20 {
-		return nil, fmt.Errorf("prometheus dispatcher requires 1 to 20 prometheus_export_vins")
+	if len(vins) > 20 {
+		return nil, fmt.Errorf("prometheus_export_vins cannot contain more than 20 VINs")
 	}
 	if retention <= 0 {
 		return nil, fmt.Errorf("prometheus retention must be positive")
@@ -279,8 +279,10 @@ func (p *Producer) Produce(entry *telemetry.Record) {
 	if !ok {
 		return
 	}
-	if _, allowed := p.allowedVINs[entry.Vin]; !allowed {
-		return
+	if len(p.allowedVINs) > 0 {
+		if _, allowed := p.allowedVINs[entry.Vin]; !allowed {
+			return
+		}
 	}
 
 	fields := transformers.PayloadToMap(payload, false, entry.Vin, p.logger)

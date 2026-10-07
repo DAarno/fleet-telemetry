@@ -12,6 +12,7 @@ import (
 
 	logrus "github.com/teslamotors/fleet-telemetry/logger"
 	"github.com/teslamotors/fleet-telemetry/metrics"
+	promadapter "github.com/teslamotors/fleet-telemetry/metrics/adapter/prometheus"
 	"github.com/teslamotors/fleet-telemetry/server/airbrake"
 	"github.com/teslamotors/fleet-telemetry/telemetry"
 )
@@ -199,12 +200,21 @@ var _ = Describe("Test full application config", func() {
 	})
 
 	Context("configure prometheus", func() {
-		It("requires an explicit VIN allowlist", func() {
+		DescribeTable("accepts optional VIN filters", func(vins []string) {
+			collector := promadapter.NewCollector()
+			DeferCleanup(collector.Shutdown)
+			config.MetricCollector = collector
+			config.PrometheusExportVINs = vins
 			config.Records = map[string][]telemetry.Dispatcher{"V": {"prometheus"}}
-			_, producers, err := config.ConfigureProducers(airbrake.NewAirbrakeHandler(nil), log, true)
-			Expect(err).To(MatchError("prometheus dispatcher requires 1 to 20 prometheus_export_vins"))
-			Expect(producers).To(BeNil())
-		})
+			var err error
+			_, producers, err = config.ConfigureProducers(airbrake.NewAirbrakeHandler(nil), log, true)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(producers["V"]).To(HaveLen(1))
+		},
+			Entry("omitted", []string(nil)),
+			Entry("empty", []string{}),
+			Entry("nonempty", []string{"TESTVIN"}),
+		)
 	})
 
 	Context("configure kinesis", func() {
